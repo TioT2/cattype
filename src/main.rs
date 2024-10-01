@@ -183,6 +183,74 @@ impl std::fmt::Display for Quote {
     }
 }
 
+pub struct MarkedWord {
+    pub chars: Vec<char>,
+    pub additional_space_count: usize,
+}
+
+impl MarkedWord {
+    pub fn new(data: &str) -> Self {
+        Self {
+            chars: data.chars().collect(),
+            additional_space_count: 0,
+        }
+    }
+}
+
+pub struct MarkedLine {
+    pub words: Vec<MarkedWord>,
+}
+
+impl MarkedLine {
+    pub fn new() -> Self {
+        Self { words: Vec::new() }
+    }
+}
+
+pub struct MarkedQuote {
+    pub alignment: usize,
+    pub lines: Vec<MarkedLine>,
+}
+
+impl MarkedQuote {
+    pub fn new(quote: &Quote, alignment: usize) -> Self {
+        let mut lines: Vec<MarkedLine> = Vec::new();
+        let mut line: MarkedLine = MarkedLine::new();
+        let mut curr_len = 0;
+
+        for word in &quote.words {
+            let new_len = curr_len + line.words.len() + word.len();
+
+            if new_len > alignment {
+                lines.push(line);
+                line = MarkedLine::new();
+
+                curr_len = 0;
+            }
+
+            curr_len += word.len();
+            line.words.push(MarkedWord::new(word));
+        }
+        lines.push(line);
+
+        for line in &mut lines {
+            let base_len = line.words.iter().map(|w| w.chars.len()).sum::<usize>() + line.words.len() - 1;
+            let word_count  = line.words.len();
+            let additional_space_count = alignment - base_len;
+
+            let dadw = additional_space_count as f32 / (word_count as f32 - 1.0);
+            let mut wcounter = 0.0f32;
+
+            for word in &mut line.words {
+                word.additional_space_count = ((wcounter + dadw).round() - wcounter.round()) as usize;
+                wcounter += dadw;
+            }
+        }
+
+        Self { alignment, lines }
+    }
+}
+
 fn main() {
     let mut tc = TerminalContext::new().expect("Error during terminal initialization occured");
 
@@ -205,62 +273,110 @@ fn main() {
     // Print quote
     let quote = Quote::default();
 
-    // split words in lines and then type'em
-    let mut lines: Vec<Vec<&str>> = Vec::new();
-    let mut line: Vec<&str> = Vec::new();
-
-    let mut curr_len = 0;
-    const MAX_LEN: usize = 60;
-
-    for word in &quote.words {
-        let new_len = curr_len + line.len() + word.len();
-
-        if new_len > MAX_LEN {
-            lines.push(line);
-            line = Vec::new();
-
-            curr_len = 0;
-        }
-
-        curr_len += word.len();
-        line.push(word);
-    }
-    lines.push(line);
+    let marked = MarkedQuote::new(&quote, 60);
 
     print!("{}{}", ansi_set_cursor_position!(5, 4), untyped_ansi);
-    for line in lines {
-        let base_len = line.iter().map(|w| w.len()).sum::<usize>() + line.len() - 1;
-        let word_count  = line.len();
-        let additional_space_count = MAX_LEN - base_len;
-
-        let dadw = additional_space_count as f32 / (word_count as f32 - 1.0);
-        let mut wcounter = 0.0f32;
-
-        for word in line {
-            let space_count = ((wcounter + dadw).round() - wcounter.round()) as u32;
-            wcounter += dadw;
-            print!("{} ", word);
-            for _ in 0..space_count {
-                print!(" ");
+    for line in &marked.lines {
+        for word in &line.words {
+            for ch in &word.chars {
+                print!("{ch}");
             }
+            print!("{:space_count$}", "", space_count = word.additional_space_count + 1);
         }
         print!("\n    ");
     }
+    print!("{}{}", ansi_set_cursor_position!(5, 4), correct_ansi);
 
-    'main_loop: loop {
-        let character = tc.read_char();
+    let mut line_iter = marked.lines.iter();
+    let mut line = line_iter.next().unwrap();
+    let mut word_iter = line.words.iter();
+    let mut word = word_iter.next().unwrap();
+    let mut char_index = 0;
 
-        // special character handling block (e.g. exit, CLS and so on)
-        'filter_block: {
-            match character {
-                '`' => break 'main_loop,
-                '^' => print!("{}", ansi_clear!()),
-                _ => break 'filter_block,
-            }
+    enum ExitStatus {
+        Ok,
+        Error,
+    }
 
-            continue 'main_loop;
+    let status = 'main_loop: loop {
+        let actual_character = std::iter::repeat_with(|| tc.read_char())
+            .filter(|ch| ch.is_alphanumeric() || ch.is_ascii_punctuation() || *ch == ' ' || *ch == '\x7F')
+            .take(1)
+            .collect::<Vec<char>>()
+            .first()
+            .copied()
+            .unwrap();
+
+        if actual_character == '`' {
+            break 'main_loop ExitStatus::Error;
         }
 
-        print!("{character}");
+        let required_character_opt = word.chars.get(char_index).copied();
+
+        match actual_character {
+            ' ' => {
+                if let Some(required_character) = required_character_opt {
+                    // error, fill all next by errorsign
+                    print!("{}{}", untyped_ansi, required_character);
+                    for index in word.chars.iter().skip(char_index + 1) {
+                        print!("{}", index);
+                    }
+                    print!("{}", correct_ansi);
+                }
+
+                // print spaces
+                for _ in 0..word.additional_space_count + 1 {
+                    print!(" ");
+                }
+
+                // get next word
+                if let Some(next_word) = word_iter.next() {
+                    word = next_word;
+                    char_index = 0;
+    
+                } else {
+                    if let Some(next_line) = line_iter.next() {
+                        line = next_line;
+                        word_iter = line.words.iter();
+    
+                        word = word_iter.next().unwrap();
+                        char_index = 0;
+    
+                        print!("\n    ");
+                    } else {
+                        break 'main_loop ExitStatus::Ok;
+                    }
+                }
+            }
+            '\x7F' => {
+                if char_index > 0 {
+                    char_index -= 1;
+                    let ch = word.chars.get(char_index).unwrap();
+                    print!("\x1B[D{}{}\x1b[D", untyped_ansi, ch);
+                }
+
+            }
+            _ => {
+                if let Some(required_character) = required_character_opt {
+                    if actual_character == required_character {
+                        print!("{}{}", correct_ansi, actual_character);
+                    } else {
+                        print!("{}{}", incorrect_ansi, required_character);
+                    }
+                    char_index += 1;
+                }
+            }
+        }
+    };
+
+    print!("{}{}", ansi_set_cursor_position!(5, 6 + marked.lines.len()), interface_ansi);
+
+    match status {
+        ExitStatus::Ok => {
+            println!("Ok");
+        }
+        ExitStatus::Error => {
+            println!("Finished...");
+        }
     }
 }
