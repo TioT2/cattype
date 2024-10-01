@@ -1,0 +1,2 @@
+# cattype
+Terminal typing test
