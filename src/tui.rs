@@ -176,8 +176,8 @@ pub fn run_tui(config: &crate::config::Config, quote: &crate::Quote, input_strea
 
     print!("{}{}", ansi_set_cursor_position!(config.layout.text_start_x + 1, config.layout.text_start_y), correct_ansi);
 
-    let mut line_iter = marked.lines.iter_mut();
-    let mut line = line_iter.next().unwrap();
+    let mut line_index = 0;
+    let mut line = marked.lines.get(0).unwrap();
     let mut word_index = 0;
     let mut word = line.words.get(word_index).unwrap();
     let mut char_index = 0;
@@ -219,8 +219,9 @@ pub fn run_tui(config: &crate::config::Config, quote: &crate::Quote, input_strea
                     word_index += 1;
                     next_word
                 } else {
-                    if let Some(next_line) = line_iter.next() {
+                    if let Some(next_line) = marked.lines.get(line_index + 1) {
                         print!("\n{}", ansi_move_cursor_right!(config.layout.text_start_x));
+                        line_index += 1;
                         line = next_line;
                         word_index = 0;
                         line.words.get(0).unwrap()
