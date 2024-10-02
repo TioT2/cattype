@@ -178,8 +178,8 @@ pub fn run_tui(config: &crate::config::Config, quote: &crate::Quote, input_strea
 
     let mut line_iter = marked.lines.iter_mut();
     let mut line = line_iter.next().unwrap();
-    let mut word_iter = line.words.iter_mut();
-    let mut word = word_iter.next().unwrap();
+    let mut word_index = 0;
+    let mut word = line.words.get(word_index).unwrap();
     let mut char_index = 0;
 
     enum ExitStatus {
@@ -215,24 +215,22 @@ pub fn run_tui(config: &crate::config::Config, quote: &crate::Quote, input_strea
 
                 print!("{:space_count$}", "", space_count = word.padding + 1);
 
-                // get next word
-                if let Some(next_word) = word_iter.next() {
-                    word = next_word;
-                    char_index = 0;
-
+                let next_word = if let Some(next_word) = line.words.get(word_index + 1) {
+                    word_index += 1;
+                    next_word
                 } else {
                     if let Some(next_line) = line_iter.next() {
-                        line = next_line;
-                        word_iter = line.words.iter_mut();
-
-                        word = word_iter.next().unwrap();
-                        char_index = 0;
-
                         print!("\n{}", ansi_move_cursor_right!(config.layout.text_start_x));
+                        line = next_line;
+                        word_index = 0;
+                        line.words.get(0).unwrap()
                     } else {
                         break 'main_loop ExitStatus::Ok;
                     }
-                }
+                };
+
+                word = next_word;
+                char_index = 0;
             }
             '\x1B' => {
                 break 'main_loop ExitStatus::TerminatedByUser;
@@ -243,7 +241,6 @@ pub fn run_tui(config: &crate::config::Config, quote: &crate::Quote, input_strea
                     let ch = word.chars.get(char_index).unwrap();
                     print!("\x1B[D{}{}\x1b[D", untyped_ansi, ch);
                 }
-
             }
             _ => {
                 if let Some(required_character) = word.chars.get(char_index).copied() {
