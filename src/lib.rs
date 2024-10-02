@@ -9,6 +9,4 @@ pub mod config;
 mod quote;
 pub use quote::Quote;
 
-pub mod marked;
-
 pub mod tui;

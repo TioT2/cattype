@@ -1,24 +1,28 @@
-
 #[derive(Clone)]
 pub struct Quote {
+    pub name: String,
     pub words: Vec<String>,
 }
 
 impl Default for Quote {
     fn default() -> Self {
-        Self::new("It  was a  bright cold  day  in April,  and the  clocks were  striking thirteen.  Winston Smith,  his chin nuzzled into his breast in an effort to escape  the  vile wind, slipped quickly  through the glass doors of Victory Mansions,  though not quickly enough to prevent a swirl of gritty dust from entering along with him.")
+        Self::new(
+            "1984",
+            "It  was a  bright cold  day  in April,  and the  clocks were  striking thirteen.  Winston Smith,  his chin nuzzled into his breast in an effort to escape  the  vile wind, slipped quickly  through the glass doors of Victory Mansions,  though not quickly enough to prevent a swirl of gritty dust from entering along with him."
+        )
     }
 }
 
 impl Quote {
-    pub fn new(source: &str) -> Self {
-        let words = source
-            .split_whitespace()
-            .filter(|s| !s.is_empty())
-            .map(|w| w.to_string())
-            .collect();
-
-        Self { words }
+    pub fn new(name: &str, source: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            words: source
+                .split_whitespace()
+                .filter(|s| !s.is_empty())
+                .map(|w| w.to_string())
+                .collect(),
+        }
     }
 }
 

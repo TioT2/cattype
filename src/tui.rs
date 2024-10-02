@@ -11,6 +11,134 @@ macro_rules! ansi_set_cursor_position {
 macro_rules! ansi_move_cursor_right { ($dx: expr) => { format!("\x1b[{}C", $dx) } }
 // macro_rules! ansi_move_cursor_left  { ($dx: expr) => { format!("\x1b[{}D", $dx) } }
 
+pub struct MarkedWord {
+    pub chars: Vec<char>,
+    pub actual_chars: Vec<char>,
+    pub padding: usize,
+}
+
+pub struct MarkedLine {
+    pub words: Vec<MarkedWord>,
+}
+
+impl MarkedLine {
+    pub fn new() -> Self {
+        Self { words: Vec::new() }
+    }
+
+    pub fn minimal_len(&self) -> usize {
+        0
+        + self.words
+            .len()
+            .checked_sub(1)
+            .unwrap_or(0)
+        + self.words
+            .iter()
+            .map(|word| usize::max(word.chars.len(), word.actual_chars.len()))
+            .sum::<usize>()
+    }
+
+    pub fn balance(&mut self, alignment: usize) -> Option<()> {
+        let minimal_len = self.minimal_len();
+
+        if alignment == minimal_len { return Some(()); }
+        if alignment < minimal_len  { return None; }
+
+        let additional_spaces_per_word = (alignment - minimal_len) as f32 / (self.words.len() as f32 - 1.0);
+        let mut wcounter = 0.0f32;
+
+        for word in &mut self.words {
+            word.padding = ((wcounter + additional_spaces_per_word).round() - wcounter.round()) as usize;
+            wcounter += additional_spaces_per_word;
+        }
+
+        Some(())
+    }
+}
+
+pub struct MarkedQuote {
+    pub alignment: usize,
+    pub lines: Vec<MarkedLine>,
+}
+
+impl MarkedQuote {
+    pub fn new(quote: &crate::Quote, alignment: usize) -> Self {
+        let mut lines: Vec<MarkedLine> = Vec::new();
+        let mut line: MarkedLine = MarkedLine::new();
+
+        let mut curr_len = 0;
+
+        for word in &quote.words {
+            let new_len = curr_len + line.words.len() + word.len();
+
+            if new_len > alignment {
+                lines.push(line);
+                line = MarkedLine::new();
+
+                curr_len = 0;
+            }
+
+            curr_len += word.len();
+            line.words.push(MarkedWord {
+                chars: word.chars().collect(),
+            actual_chars: Vec::new(),
+                padding: 0,
+            });
+        }
+        lines.push(line);
+
+        for line in lines.iter_mut() {
+            line.balance(alignment);
+        }
+
+        Self { alignment, lines }
+    }
+
+    pub fn rebuild(&mut self, first_affected: usize) -> usize {
+        let Some(potentially_affected) = self.lines.get_mut(first_affected..) else {
+            return first_affected;
+        };
+
+        let mut popped = Vec::new();
+        let mut last_affected = 0;
+
+        'line_rebalance_loop: for (index, line) in potentially_affected.iter_mut().enumerate() {
+            (line.words, popped) = {
+                let mut words = Vec::new();
+                std::mem::swap(&mut words, &mut line.words);
+                (popped.into_iter().rev().chain(words.into_iter()).collect(), Vec::new())
+            };
+
+            last_affected = index;
+
+            'pop_loop: loop {
+                if line.balance(self.alignment).is_some() {
+                    break 'pop_loop;
+                }
+
+                popped.push(line.words.pop().unwrap());
+            }
+
+            if popped.is_empty() {
+                break 'line_rebalance_loop;
+            }
+        };
+
+        if popped.is_empty() {
+            return last_affected;
+        }
+
+        self.lines.push({
+            let mut line = MarkedLine::new();
+            line.words = popped.into_iter().rev().collect();
+            _ = line.balance(self.alignment);
+            line
+        });
+
+        self.lines.len() - 1
+    }
+}
+
 pub fn run_tui(config: &crate::config::Config, quote: &crate::Quote, input_stream: &mut dyn Iterator<Item = char>) {
     let correct_ansi = config.colors.correct.foreground_ansi();
     let incorrect_ansi = config.colors.incorrect.foreground_ansi();
@@ -23,20 +151,21 @@ pub fn run_tui(config: &crate::config::Config, quote: &crate::Quote, input_strea
     // set background color
     print!("{}{}", background_ansi, ansi_clear!());
 
-    print!("{}{}1984", ansi_set_cursor_position!(config.layout.name_x + 1, config.layout.name_y), interface_ansi);
+    print!("{}{}{}",
+        ansi_set_cursor_position!(config.layout.name_x + 1, config.layout.name_y),
+        interface_ansi,
+        quote.name
+    );
 
-    let marked = crate::marked::MarkedQuote::new(
+    let mut marked = MarkedQuote::new(
         quote,
         config.layout.alignment,
-        config.layout.tab_size
     );
 
     print!("{}{}", ansi_set_cursor_position!(config.layout.text_start_x + 1, config.layout.text_start_y), untyped_ansi);
-    if config.layout.tab_size != 0 {
-        print!("{:space_count$}", "", space_count = config.layout.tab_size);
-    }
+
     for line in &marked.lines {
-        for word in line {
+        for word in &line.words {
             for ch in &word.chars {
                 print!("{ch}");
             }
@@ -46,19 +175,16 @@ pub fn run_tui(config: &crate::config::Config, quote: &crate::Quote, input_strea
     }
 
     print!("{}{}", ansi_set_cursor_position!(config.layout.text_start_x + 1, config.layout.text_start_y), correct_ansi);
-    if config.layout.tab_size != 0 {
-        print!("{:space_count$}", "", space_count = config.layout.tab_size);
-    }
 
-    let mut line_iter = marked.lines.iter();
+    let mut line_iter = marked.lines.iter_mut();
     let mut line = line_iter.next().unwrap();
-    let mut word_iter = line.iter();
+    let mut word_iter = line.words.iter_mut();
     let mut word = word_iter.next().unwrap();
     let mut char_index = 0;
 
     enum ExitStatus {
         Ok,
-        Error,
+        TerminatedByUser,
         InputStreamEnd,
     }
 
@@ -69,6 +195,7 @@ pub fn run_tui(config: &crate::config::Config, quote: &crate::Quote, input_strea
             || ch.is_ascii_punctuation()
             || *ch == ' '
             || *ch == '\x7F'
+            || *ch == '\x1B'
         );
 
     let status = 'main_loop: loop {
@@ -77,18 +204,11 @@ pub fn run_tui(config: &crate::config::Config, quote: &crate::Quote, input_strea
             None => break 'main_loop ExitStatus::InputStreamEnd,
         };
 
-        // quit
-        if actual_character == '`' {
-            break 'main_loop ExitStatus::Error;
-        }
-
-        let required_character_opt = word.chars.get(char_index).copied();
-
         match actual_character {
             ' ' => {
-                if let Some(required_character) = required_character_opt {
-                    print!("{}{}", missed_ansi, required_character);
-                    for index in word.chars.iter().skip(char_index + 1) {
+                if char_index < word.chars.len() {
+                    print!("{}", missed_ansi);
+                    for index in word.chars.iter().skip(char_index) {
                         print!("{}", index);
                     }
                 }
@@ -103,7 +223,7 @@ pub fn run_tui(config: &crate::config::Config, quote: &crate::Quote, input_strea
                 } else {
                     if let Some(next_line) = line_iter.next() {
                         line = next_line;
-                        word_iter = line.iter();
+                        word_iter = line.words.iter_mut();
 
                         word = word_iter.next().unwrap();
                         char_index = 0;
@@ -114,6 +234,9 @@ pub fn run_tui(config: &crate::config::Config, quote: &crate::Quote, input_strea
                     }
                 }
             }
+            '\x1B' => {
+                break 'main_loop ExitStatus::TerminatedByUser;
+            }
             '\x7F' => {
                 if char_index > 0 {
                     char_index -= 1;
@@ -123,7 +246,7 @@ pub fn run_tui(config: &crate::config::Config, quote: &crate::Quote, input_strea
 
             }
             _ => {
-                if let Some(required_character) = required_character_opt {
+                if let Some(required_character) = word.chars.get(char_index).copied() {
                     if actual_character == required_character {
                         print!("{}{}", correct_ansi, actual_character);
                     } else {
@@ -145,8 +268,8 @@ pub fn run_tui(config: &crate::config::Config, quote: &crate::Quote, input_strea
         ExitStatus::Ok => {
             println!("Ok");
         }
-        ExitStatus::Error => {
-            println!("Finished manually");
+        ExitStatus::TerminatedByUser => {
+            println!("Terminated by user");
         }
         ExitStatus::InputStreamEnd => {
             println!("Input stream end");

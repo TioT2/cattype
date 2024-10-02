@@ -1,6 +1,5 @@
 use crate::Color;
 
-
 pub struct ColorScheme {
     pub background : Color,
     pub interface  : Color,
