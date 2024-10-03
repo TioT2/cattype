@@ -6,10 +6,10 @@ macro_rules! ansi_set_cursor_position {
     ($x: expr, $y: expr) => { format!("\x1b[{};{}f", ($y), ($x)) }
 }
 
-// macro_rules! ansi_move_cursor_up    { ($dx: expr) => { format!("\x1b[{}A", $dx) } }
-// macro_rules! ansi_move_cursor_down  { ($dx: expr) => { format!("\x1b[{}B", $dx) } }
+macro_rules! ansi_move_cursor_up    { ($dx: expr) => { format!("\x1b[{}A", $dx) } }
+macro_rules! ansi_move_cursor_down  { ($dx: expr) => { format!("\x1b[{}B", $dx) } }
 macro_rules! ansi_move_cursor_right { ($dx: expr) => { format!("\x1b[{}C", $dx) } }
-// macro_rules! ansi_move_cursor_left  { ($dx: expr) => { format!("\x1b[{}D", $dx) } }
+macro_rules! ansi_move_cursor_left  { ($dx: expr) => { format!("\x1b[{}D", $dx) } }
 
 pub struct MarkedWord {
     pub chars: Vec<char>,
@@ -39,9 +39,12 @@ impl MarkedLine {
     }
 
     pub fn balance(&mut self, alignment: usize) -> Option<()> {
+        if self.words.len() < 2 {
+            return Some(());
+        }
+
         let minimal_len = self.minimal_len();
 
-        if alignment == minimal_len { return Some(()); }
         if alignment < minimal_len  { return None; }
 
         let additional_spaces_per_word = (alignment - minimal_len) as f32 / (self.words.len() as f32 - 1.0);
@@ -177,13 +180,14 @@ pub fn run_tui(config: &crate::config::Config, quote: &crate::Quote, input_strea
     print!("{}{}", ansi_set_cursor_position!(config.layout.text_start_x + 1, config.layout.text_start_y), correct_ansi);
 
     let mut line_index = 0;
-    let mut line = marked.lines.get(0).unwrap();
+    let mut line = marked.lines.get_mut(0).unwrap();
     let mut word_index = 0;
-    let mut word = line.words.get(word_index).unwrap();
+    let mut word = line.words.get_mut(word_index).unwrap();
     let mut char_index = 0;
 
     enum ExitStatus {
         Ok,
+        MarkupErrorOccured,
         TerminatedByUser,
         InputStreamEnd,
     }
@@ -215,16 +219,16 @@ pub fn run_tui(config: &crate::config::Config, quote: &crate::Quote, input_strea
 
                 print!("{:space_count$}", "", space_count = word.padding + 1);
 
-                let next_word = if let Some(next_word) = line.words.get(word_index + 1) {
+                let next_word = if let Some(next_word) = line.words.get_mut(word_index + 1) {
                     word_index += 1;
                     next_word
                 } else {
-                    if let Some(next_line) = marked.lines.get(line_index + 1) {
+                    if let Some(next_line) = marked.lines.get_mut(line_index + 1) {
                         print!("\n{}", ansi_move_cursor_right!(config.layout.text_start_x));
                         line_index += 1;
                         line = next_line;
                         word_index = 0;
-                        line.words.get(0).unwrap()
+                        line.words.get_mut(0).unwrap()
                     } else {
                         break 'main_loop ExitStatus::Ok;
                     }
@@ -237,20 +241,107 @@ pub fn run_tui(config: &crate::config::Config, quote: &crate::Quote, input_strea
                 break 'main_loop ExitStatus::TerminatedByUser;
             }
             '\x7F' => {
-                if char_index > 0 {
+                if false && char_index > 0 {
+                    _ = word.actual_chars.pop();
                     char_index -= 1;
-                    let ch = word.chars.get(char_index).unwrap();
+                    let ch = word.actual_chars.get(char_index).unwrap();
                     print!("\x1B[D{}{}\x1b[D", untyped_ansi, ch);
                 }
             }
             _ => {
-                if let Some(required_character) = word.chars.get(char_index).copied() {
-                    if actual_character == required_character {
-                        print!("{}{}", correct_ansi, actual_character);
-                    } else {
-                        print!("{}{}", incorrect_ansi, required_character);
+                // move left
+                let typed = usize::min(word.actual_chars.len(), word.chars.len());
+                if typed > 0 {
+                    print!("{}", ansi_move_cursor_left!(typed));
+                }
+                
+                // insert actual character and repaint the word
+                word.actual_chars.push(actual_character);
+
+                if word.actual_chars.len() > word.chars.len() {
+                    let last_affected = marked.rebuild(line_index);
+                    let mut up_count = 0;
+
+                    // repaint affected lines
+                    for line in marked.lines.get(line_index..=last_affected).unwrap() {
+                        print!("\r{}", ansi_move_cursor_right!(config.layout.text_start_x));
+
+                        for repainted_word in &line.words {
+                            if repainted_word.actual_chars.len() <= repainted_word.chars.len() {
+                                let mut repainted_char_iter = repainted_word.chars.iter();
+                                for (char, actual) in repainted_word.actual_chars.iter().zip(&mut repainted_char_iter) {
+                                    let ansi = if *char == *actual { &correct_ansi } else { &incorrect_ansi };
+                                    print!("{}{}", ansi, char);
+                                }
+    
+                                print!("{}", untyped_ansi);
+                                for char in repainted_char_iter {
+                                    print!("{}", char);
+                                }
+                            } else {
+                                let mut repainted_char_iter = repainted_word.actual_chars.iter();
+                                for (actual, char) in repainted_word.chars.iter().zip(&mut repainted_char_iter) {
+                                    let ansi = if *char == *actual { &correct_ansi } else { &incorrect_ansi };
+                                    print!("{}{}", ansi, char);
+                                }
+    
+                                print!("{}", missed_ansi);
+                                for char in repainted_char_iter {
+                                    print!("{}", char);
+                                }
+                            }
+                            for _ in 0..repainted_word.padding + 1 {
+                                print!(" ");
+                            }
+                        }
+
+                        print!("\n");
+                        up_count += 1;
                     }
+
+                    // go to initial line
+                    print!("\r{}", ansi_move_cursor_right!(config.layout.text_start_x));
+                    if up_count != 0 {
+                        print!("{}", ansi_move_cursor_up!(up_count));
+                    }
+
+                    line = marked.lines.get_mut(line_index).unwrap();
+
+                    if word_index >= line.words.len() {
+                        line_index += 1;
+                        line = marked.lines.get_mut(line_index).unwrap();
+                        word_index = 0;
+                    }
+
+                    for word in &line.words[0..word_index] {
+                        let move_len = usize::max(word.actual_chars.len(), word.chars.len()) + word.padding + 1;
+                        print!("{}", ansi_move_cursor_right!(move_len));
+                    }
+
                     char_index += 1;
+                    print!("{}", ansi_move_cursor_right!(char_index));
+
+                    word = line.words.get_mut(word_index).unwrap();
+
+                } else {
+                    // repaint current word
+                    char_index = 0;
+                    let mut cw = word.chars.iter();
+                    for (char, actual) in word.actual_chars.iter().zip(&mut cw) {
+                        let ansi = if *char == *actual { &correct_ansi } else { &incorrect_ansi };
+                        print!("{}{}", ansi, char);
+                        char_index += 1;
+                    }
+    
+                    print!("{}", untyped_ansi);
+                    let mut count = 0;
+                    for char in cw {
+                        print!("{}", char);
+                        count += 1;
+                    }
+                    if count != 0 {
+                        print!("{}", ansi_move_cursor_left!(count));
+                    }
                 }
             }
         }
@@ -268,6 +359,9 @@ pub fn run_tui(config: &crate::config::Config, quote: &crate::Quote, input_strea
         }
         ExitStatus::TerminatedByUser => {
             println!("Terminated by user");
+        }
+        ExitStatus::MarkupErrorOccured => {
+            println!("Markup error occured");
         }
         ExitStatus::InputStreamEnd => {
             println!("Input stream end");

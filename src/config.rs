@@ -29,7 +29,7 @@ impl Default for Layout {
             text_start_x: 8,
             text_start_y: 4,
             tab_size: 4,
-            alignment: 64,
+            alignment: 48,
             result_offset: 1,
         }
     }
